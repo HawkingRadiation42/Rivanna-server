@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-dark-border;
+  }
+
+  body {
+    @apply bg-dark text-text-primary font-sans antialiased;
+    letter-spacing: 0.015em;
+    background-color: #000000 !important;
+    font-weight: 300;
+  }
+
+  #root {
+    background-color: #000000;
+  }
+
+  h1 {
+    font-size: 2.5rem;
+    font-weight: 200;
+    letter-spacing: 0.01em;
+  }
+
+  h2 {
+    font-size: 2rem;
+    font-weight: 300;
+    letter-spacing: 0.01em;
+  }
+
+  h3 {
+    font-size: 1.5rem;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+  }
+
+  h4, h5, h6 {
+    font-weight: 400;
+    letter-spacing: 0.01em;
+  }
+
+  ::-webkit-scrollbar {
+    @apply w-1.5 h-1.5;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-dark;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-[#D65737]/20 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-[#D65737]/40;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-dark rounded-lg border border-dark-border/30 p-6 transition-all duration-300;
+  }
+
+  .card-hover {
+    @apply card hover:border-[#D65737]/15 hover:bg-dark/50 hover:shadow-none;
+  }
+
+  .btn-primary {
+    @apply bg-[#D65737] text-white px-6 py-2.5 rounded-lg font-light transition-all duration-200 hover:bg-[#e67d5f] active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-dark border border-dark-border/40 text-text-primary px-6 py-2.5 rounded-lg font-light transition-all duration-200 hover:border-[#D65737]/30 hover:text-[#D65737] active:scale-95;
+  }
+
+  .input {
+    @apply bg-dark border border-dark-border/30 rounded-lg px-4 py-2.5 text-base text-text-primary placeholder:text-text-secondary/60 focus:outline-none focus:border-[#D65737]/50 focus:ring-0 transition-all duration-200;
+  }
+
+  .badge {
+    @apply px-3 py-1.5 rounded-md text-xs font-light;
+  }
+
+  .status-idle {
+    @apply bg-green-500/10 text-green-400 border border-green-500/20;
+  }
+
+  .status-alloc {
+    @apply bg-blue-500/10 text-blue-400 border border-blue-500/20;
+  }
+
+  .status-mix {
+    @apply bg-[#D65737]/10 text-[#D65737] border border-[#D65737]/20;
+  }
+
+  .status-down {
+    @apply bg-red-500/10 text-red-400 border border-red-500/20;
+  }
+
+  .status-drain {
+    @apply bg-gray-500/10 text-gray-400 border border-gray-500/20;
+  }
+}
