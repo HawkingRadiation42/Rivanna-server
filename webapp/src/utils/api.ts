@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { NodesResponse, JobsResponse } from '../types';
+import type { NodesResponse, JobsResponse, GPUStatsResponse, GPUQueueResponse, CPUStatsResponse } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -24,6 +24,23 @@ export const clusterAPI = {
 
   getETA: async (spec: any): Promise<any> => {
     const response = await api.post('/eta', spec);
+    return response.data;
+  },
+
+  // GPU-related methods
+  getGPUStats: async (): Promise<GPUStatsResponse> => {
+    const response = await api.get<GPUStatsResponse>('/gpu');
+    return response.data;
+  },
+
+  getGPUQueue: async (gpuType: string): Promise<GPUQueueResponse> => {
+    const response = await api.get<GPUQueueResponse>(`/gpu/${gpuType}`);
+    return response.data;
+  },
+
+  // CPU-related methods
+  getCPUStats: async (): Promise<CPUStatsResponse> => {
+    const response = await api.get<CPUStatsResponse>('/cpu');
     return response.data;
   },
 };

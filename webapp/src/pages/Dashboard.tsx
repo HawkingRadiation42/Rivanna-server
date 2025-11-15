@@ -4,11 +4,10 @@ import { Cpu, HardDrive, Activity, TrendingUp } from 'lucide-react';
 import { AreaChart, Area, ResponsiveContainer, Tooltip, PieChart, Pie, Cell } from 'recharts';
 import StatCard from '../components/StatCard';
 import { clusterAPI } from '../utils/api';
-import { calculateClusterStats } from '../utils/helpers';
-import type { Node, Job } from '../types';
+import type { Job, CPUStatsResponse } from '../types';
 
 export default function Dashboard() {
-  const [nodes, setNodes] = useState<Node[]>([]);
+  const [cpuStats, setCpuStats] = useState<CPUStatsResponse | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -21,11 +20,11 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const [nodesData, jobsData] = await Promise.all([
-        clusterAPI.getNodes(),
+      const [cpuData, jobsData] = await Promise.all([
+        clusterAPI.getCPUStats(),
         clusterAPI.getJobs(),
       ]);
-      setNodes(nodesData.nodes);
+      setCpuStats(cpuData);
       setJobs(jobsData.jobs);
       setError(null);
     } catch (err) {
@@ -36,7 +35,20 @@ export default function Dashboard() {
     }
   };
 
-  const stats = calculateClusterStats(nodes);
+  // Calculate stats from CPU data
+  const totalCPUs = cpuStats?.cluster_totals.total_cpus || 0;
+  const idleCPUs = cpuStats?.top_cpu_nodes.reduce((sum, node) => sum + node.idle_cpus, 0) || 0;
+  const allocCPUs = totalCPUs - idleCPUs;
+
+  const stats = {
+    totalCPUs,
+    idleCPUs,
+    allocCPUs,
+    cpuUtilization: totalCPUs > 0 ? ((allocCPUs / totalCPUs) * 100).toFixed(1) : '0',
+    totalNodes: (cpuStats?.top_cpu_nodes.length || 0) + (cpuStats?.top_memory_nodes.length || 0),
+    idleNodes: cpuStats?.top_cpu_nodes.filter(node => node.idle_cpus > 0).length || 0,
+  };
+
   const runningJobs = jobs.filter(j => j.state === 'R').length;
   const pendingJobs = jobs.filter(j => j.state === 'PD').length;
 
