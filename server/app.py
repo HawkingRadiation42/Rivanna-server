@@ -1,10 +1,12 @@
-import os, asyncio, time, json
+import os, pathlib, asyncio, time, json
 from typing import Optional, List, Dict
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = pathlib.Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
 
 # =========================
 # Config
@@ -99,31 +101,63 @@ REASON_MAP: Dict[str, Dict] = {
 # =========================
 # SSH runner (Paramiko) or Mock
 # =========================
+# def run_ssh(cmd: str) -> str:
+#     if MOCK_MODE:
+#         # For mock, load file named by command key
+#         key = "sinfo" if cmd.startswith("sinfo") else "squeue"
+#         path = os.path.join(MOCK_DATA_DIR, f"{key}.txt")
+#         if not os.path.exists(path):
+#             return ""
+#         return open(path, "r", encoding="utf-8", errors="ignore").read()
+
+#     import paramiko
+#     c = paramiko.SSHClient()
+#     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+#     c.connect(
+#         hostname=HPC_HOST,
+#         username=HPC_USER,
+#         key_filename=SSH_KEY_PATH,
+#         timeout=20,
+#     )
+#     try:
+#         _, stdout, stderr = c.exec_command(cmd, timeout=25)
+#         out = stdout.read().decode(errors="ignore")
+#         err = stderr.read().decode(errors="ignore")
+#         return out if out.strip() else err
+#     finally:
+#         c.close()
 def run_ssh(cmd: str) -> str:
     if MOCK_MODE:
-        # For mock, load file named by command key
         key = "sinfo" if cmd.startswith("sinfo") else "squeue"
-        path = os.path.join(MOCK_DATA_DIR, f"{key}.txt")
-        if not os.path.exists(path):
-            return ""
-        return open(path, "r", encoding="utf-8", errors="ignore").read()
+        return open(os.path.join(MOCK_DATA_DIR, f"{key}.txt"), "r", encoding="utf-8", errors="ignore").read()
 
-    import paramiko
+    import paramiko, os
+    key_path = SSH_KEY_PATH
+    key_pass = os.getenv("SSH_KEY_PASSPHRASE")
+
+    # Load Ed25519 key with passphrase
+    pkey = paramiko.Ed25519Key.from_private_key_file(key_path, password=key_pass)
+
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     c.connect(
         hostname=HPC_HOST,
         username=HPC_USER,
-        key_filename=SSH_KEY_PATH,
+        pkey=pkey,
+        allow_agent=False,
+        look_for_keys=False,
         timeout=20,
+        banner_timeout=60,
+        auth_timeout=30,
     )
     try:
-        _, stdout, stderr = c.exec_command(cmd, timeout=25)
+        _, stdout, stderr = c.exec_command(cmd, timeout=30)
         out = stdout.read().decode(errors="ignore")
         err = stderr.read().decode(errors="ignore")
         return out if out.strip() else err
     finally:
         c.close()
+
 
 # =========================
 # Parsers
