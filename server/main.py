@@ -234,6 +234,30 @@ async def get_cpu_stats():
                             cluster_totals["total_cpus"] = int(parts[1].strip())
                         except ValueError:
                             logger.warning(f"Could not parse total CPUs from: {line}")
+                elif "Allocated CPUs" in line:
+                    # Extract: "Allocated CPUs   : 12345"
+                    parts = line.split(':')
+                    if len(parts) == 2:
+                        try:
+                            cluster_totals["allocated_cpus"] = int(parts[1].strip())
+                        except ValueError:
+                            logger.warning(f"Could not parse allocated CPUs from: {line}")
+                elif "Idle CPUs" in line:
+                    # Extract: "Idle CPUs        : 12345"
+                    parts = line.split(':')
+                    if len(parts) == 2:
+                        try:
+                            cluster_totals["idle_cpus"] = int(parts[1].strip())
+                        except ValueError:
+                            logger.warning(f"Could not parse idle CPUs from: {line}")
+                elif "Other CPUs" in line:
+                    # Extract: "Other CPUs       : 12345"
+                    parts = line.split(':')
+                    if len(parts) == 2:
+                        try:
+                            cluster_totals["other_cpus"] = int(parts[1].strip())
+                        except ValueError:
+                            logger.warning(f"Could not parse other CPUs from: {line}")
                 elif "Total Memory" in line:
                     # Extract: "Total Memory     : 123456 MB (123.45 GiB)"
                     parts = line.split(':')

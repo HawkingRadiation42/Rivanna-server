@@ -41,6 +41,9 @@ awk -F'|' -v SCTRL="$SCONTROL" '
 
     # Totals
     total_cpus += t
+    total_alloc_cpus += a
+    total_idle_cpus += i
+    total_other_cpus += o
     # Prefer RealMemory if we have it; else sinfo %m
     if (node in real) total_mem += real[node]
     else total_mem += mem_total
@@ -67,6 +70,9 @@ awk -F'|' -v SCTRL="$SCONTROL" '
     # ---- Output totals ----
     printf "===== CLUSTER TOTALS =====\n"
     printf "Total CPUs       : %d\n", (total_cpus ? total_cpus : 0)
+    printf "Allocated CPUs   : %d\n", (total_alloc_cpus ? total_alloc_cpus : 0)
+    printf "Idle CPUs        : %d\n", (total_idle_cpus ? total_idle_cpus : 0)
+    printf "Other CPUs       : %d\n", (total_other_cpus ? total_other_cpus : 0)
     printf "Total Memory     : %d MB (%.2f GiB)\n\n",
            (total_mem ? total_mem : 0), (total_mem/1024.0)
 
