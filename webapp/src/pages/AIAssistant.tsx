@@ -1,8 +1,20 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Bot, User, Sparkles, Lightbulb, Clock, Zap, Copy, CheckCircle2 } from 'lucide-react';
+import { Send, Bot, User, Sparkles, Lightbulb, Clock, Zap, Copy, CheckCircle2, X } from 'lucide-react';
 import { clusterAPI } from '../utils/api';
-import type { ChatMessage, OptimizationResponse } from '../types';
+import type { ChatMessage, OptimizationResponse, WaitTimeRequest } from '../types';
+
+// GPU type to partition mapping
+const GPU_TYPE_TO_PARTITION: Record<string, string> = {
+  'a40': 'gpu-a40',
+  'a6000': 'gpu-a6000',
+  'h200': 'gpu-h200',
+  'a100-40': 'gpu-a100-40',
+  'a100-80': 'gpu-a100-80',
+  '2080ti': 'interactive-rtx2080',
+  '3090': 'interactive-rtx3090',
+  'v100': 'gpu-v100'
+};
 
 const suggestedPrompts = [
   {
@@ -35,6 +47,17 @@ export default function AIAssistant() {
   const [isTyping, setIsTyping] = useState(false);
   const [lastRecommendation, setLastRecommendation] = useState<OptimizationResponse | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Wait time estimation modal state
+  const [showWaitTimeModal, setShowWaitTimeModal] = useState(false);
+  const [waitTimeForm, setWaitTimeForm] = useState({
+    cpu_count: 1,
+    memory_gb: 4,
+    gpu_count: 1,
+    gpu_type: 'a40'
+  });
+  const [estimatedWait, setEstimatedWait] = useState<number | null>(null);
+  const [isEstimating, setIsEstimating] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -96,6 +119,48 @@ export default function AIAssistant() {
     setPlaceholderText(prompt);
   };
 
+  const handleEstimateWaitTime = async () => {
+    setIsEstimating(true);
+    setEstimatedWait(null);
+
+    try {
+      const partition = GPU_TYPE_TO_PARTITION[waitTimeForm.gpu_type];
+
+      const request: WaitTimeRequest = {
+        cpu_count: waitTimeForm.cpu_count,
+        memory_gb: waitTimeForm.memory_gb,
+        gpu_count: waitTimeForm.gpu_count,
+        partition: partition
+      };
+
+      const response = await clusterAPI.predictWaitTime(request);
+
+      if (response.success && response.estimated_wait_hours !== undefined) {
+        setEstimatedWait(response.estimated_wait_hours);
+      } else {
+        // Show error message
+        const errorMessage: ChatMessage = {
+          role: 'assistant',
+          content: `Failed to estimate wait time: ${response.error || 'Unknown error'}`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorMessage]);
+        setShowWaitTimeModal(false);
+      }
+    } catch (error) {
+      console.error('Failed to estimate wait time:', error);
+      const errorMessage: ChatMessage = {
+        role: 'assistant',
+        content: 'Sorry, I encountered an error while estimating wait time. Please try again.',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      setShowWaitTimeModal(false);
+    } finally {
+      setIsEstimating(false);
+    }
+  };
+
   return (
     <div className="h-screen flex flex-col bg-dark" style={{ backgroundColor: '#000000' }}>
       {/* Header */}
@@ -133,7 +198,13 @@ export default function AIAssistant() {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: idx * 0.1 }}
-                onClick={() => handleSuggestedPrompt(item.prompt)}
+                onClick={() => {
+                  if (item.title === 'Estimate wait time') {
+                    setShowWaitTimeModal(true);
+                  } else {
+                    handleSuggestedPrompt(item.prompt);
+                  }
+                }}
                 className="card-hover p-4 text-left group"
               >
                 <div className="flex items-start gap-3">
@@ -337,6 +408,190 @@ ${config.gpu_type ? `#SBATCH --gres=gpu:${config.gpu_type.toLowerCase()}:${confi
           AI-powered assistance • Responses may take a few moments
         </p>
       </motion.div>
+
+      {/* Wait Time Estimation Modal */}
+      <AnimatePresence>
+        {showWaitTimeModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-dark border border-dark-border/40 rounded-xl shadow-2xl p-8 max-w-2xl w-full"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between mb-6 pb-4 border-b border-dark-border/30">
+                <div>
+                  <h2 className="text-2xl font-light text-text-primary flex items-center gap-3">
+                    <div className="w-10 h-10 bg-[#D65737]/10 rounded-lg flex items-center justify-center">
+                      <Clock className="w-6 h-6 text-[#D65737]" />
+                    </div>
+                    Estimate Job Wait Time
+                  </h2>
+                  <p className="text-sm text-text-secondary/70 mt-2 ml-13">Configure your job requirements for AI-powered wait time prediction</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowWaitTimeModal(false);
+                    setEstimatedWait(null);
+                  }}
+                  className="text-text-secondary hover:text-text-primary transition-colors p-2 hover:bg-dark-border/20 rounded-lg"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Form - Table-like structure */}
+              <div className="space-y-3 mb-6">
+                {/* Row 1: CPU and Memory */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-dark-border/10 rounded-lg p-4 border border-dark-border/20">
+                    <label className="block text-xs uppercase tracking-wider text-text-secondary/70 mb-3 font-medium">
+                      CPU Cores
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="128"
+                      value={waitTimeForm.cpu_count}
+                      onChange={(e) => setWaitTimeForm({ ...waitTimeForm, cpu_count: parseInt(e.target.value) || 1 })}
+                      className="input w-full text-lg"
+                      placeholder="e.g., 16"
+                    />
+                    <p className="text-xs text-text-secondary/50 mt-2">Max: 128 cores</p>
+                  </div>
+
+                  <div className="bg-dark-border/10 rounded-lg p-4 border border-dark-border/20">
+                    <label className="block text-xs uppercase tracking-wider text-text-secondary/70 mb-3 font-medium">
+                      Memory (GB)
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="1024"
+                      value={waitTimeForm.memory_gb}
+                      onChange={(e) => setWaitTimeForm({ ...waitTimeForm, memory_gb: parseInt(e.target.value) || 1 })}
+                      className="input w-full text-lg"
+                      placeholder="e.g., 64"
+                    />
+                    <p className="text-xs text-text-secondary/50 mt-2">Max: 1024 GB</p>
+                  </div>
+                </div>
+
+                {/* Row 2: GPU Type and Count */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-dark-border/10 rounded-lg p-4 border border-dark-border/20">
+                    <label className="block text-xs uppercase tracking-wider text-text-secondary/70 mb-3 font-medium">
+                      GPU Type
+                    </label>
+                    <select
+                      value={waitTimeForm.gpu_type}
+                      onChange={(e) => setWaitTimeForm({ ...waitTimeForm, gpu_type: e.target.value })}
+                      className="input w-full text-lg"
+                    >
+                      <option value="a40">A40</option>
+                      <option value="a6000">A6000</option>
+                      <option value="h200">H200 (Latest)</option>
+                      <option value="a100-40">A100 - 40GB VRAM</option>
+                      <option value="a100-80">A100 - 80GB VRAM</option>
+                      <option value="v100">V100</option>
+                      <option value="3090">RTX 3090</option>
+                      <option value="2080ti">RTX 2080 Ti</option>
+                    </select>
+                    <p className="text-xs text-text-secondary/50 mt-2">Select GPU partition</p>
+                  </div>
+
+                  <div className="bg-dark-border/10 rounded-lg p-4 border border-dark-border/20">
+                    <label className="block text-xs uppercase tracking-wider text-text-secondary/70 mb-3 font-medium">
+                      GPU Count
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="4"
+                      value={waitTimeForm.gpu_count}
+                      onChange={(e) => setWaitTimeForm({ ...waitTimeForm, gpu_count: parseInt(e.target.value) || 0 })}
+                      className="input w-full text-lg"
+                      placeholder="e.g., 2"
+                    />
+                    <p className="text-xs text-text-secondary/50 mt-2">Max: 4 GPUs</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Result Display */}
+              {estimatedWait !== null && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-gradient-to-br from-[#D65737]/20 to-purple-500/10 border-2 border-[#D65737]/40 rounded-xl p-6 mb-6"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-3">
+                        <CheckCircle2 className="w-6 h-6 text-green-500" />
+                        <h3 className="text-lg font-medium text-text-primary">Prediction Complete</h3>
+                      </div>
+                      <div className="flex items-baseline gap-2 mb-3">
+                        <span className="text-5xl font-light text-[#D65737]">
+                          {estimatedWait < 1
+                            ? Math.round(estimatedWait * 60)
+                            : estimatedWait.toFixed(1)
+                          }
+                        </span>
+                        <span className="text-xl text-text-secondary">
+                          {estimatedWait < 1 ? 'minutes' : 'hours'}
+                        </span>
+                      </div>
+                      <div className="bg-dark/50 rounded-lg p-3 space-y-1">
+                        <p className="text-sm text-text-secondary/90">
+                          <span className="text-text-secondary/70">Configuration:</span> {waitTimeForm.gpu_count} × {waitTimeForm.gpu_type.toUpperCase()}
+                        </p>
+                        <p className="text-sm text-text-secondary/90">
+                          <span className="text-text-secondary/70">Resources:</span> {waitTimeForm.cpu_count} CPU cores, {waitTimeForm.memory_gb}GB RAM
+                        </p>
+                        <p className="text-sm text-text-secondary/90">
+                          <span className="text-text-secondary/70">Partition:</span> {GPU_TYPE_TO_PARTITION[waitTimeForm.gpu_type]}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-3">
+                <button
+                  onClick={handleEstimateWaitTime}
+                  disabled={isEstimating}
+                  className="btn-primary flex-1 flex items-center justify-center gap-2 py-3"
+                >
+                  {isEstimating ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>Analyzing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-5 h-5" />
+                      <span>Predict Wait Time</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowWaitTimeModal(false);
+                    setEstimatedWait(null);
+                  }}
+                  className="btn-secondary px-8 py-3"
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

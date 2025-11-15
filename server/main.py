@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
+from model import JobWaitDurationPredictor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +23,16 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Global SSH client
 ssh_client = None
+
+# Initialize wait time predictor
+wait_time_predictor = None
+try:
+    model_path = os.path.join(os.path.dirname(__file__), "random_forest_model.pkl")
+    wait_time_predictor = JobWaitDurationPredictor(model_path)
+    logger.info("Wait time predictor initialized successfully")
+except Exception as e:
+    logger.warning(f"Failed to initialize wait time predictor: {e}")
+    logger.warning("Wait time estimation will not be available")
 
 
 # Pydantic models for optimization endpoint
@@ -50,6 +61,20 @@ class OptimizationResponse(BaseModel):
     success: bool
     natural_language: str
     recommendation: Optional[OptimizationRecommendation] = None
+    error: Optional[str] = None
+
+
+class WaitTimeRequest(BaseModel):
+    cpu_count: int
+    memory_gb: int
+    gpu_count: int
+    partition: str
+
+
+class WaitTimeResponse(BaseModel):
+    success: bool
+    estimated_wait_hours: Optional[float] = None
+    partition: str
     error: Optional[str] = None
 
 
@@ -990,6 +1015,48 @@ Base recommendations on:
         return OptimizationResponse(
             success=False,
             natural_language="Sorry, I encountered an error while processing your request.",
+            error=str(e)
+        )
+
+
+@app.post("/predict-wait-time")
+async def predict_wait_time(request: WaitTimeRequest):
+    """Predict job wait time using the machine learning model"""
+    try:
+        if not wait_time_predictor:
+            raise HTTPException(
+                status_code=503,
+                detail="Wait time predictor not initialized. Please ensure random_forest_model.pkl exists in the server directory."
+            )
+
+        logger.info(f"Wait time prediction request: CPUs={request.cpu_count}, Memory={request.memory_gb}GB, GPUs={request.gpu_count}, Partition={request.partition}")
+
+        # Call the predictor
+        estimated_wait_seconds = wait_time_predictor.predict_wait_duration(
+            alloc_cpus=request.cpu_count,
+            req_mem_gb=request.memory_gb,
+            gpu_count=request.gpu_count,
+            partition=request.partition
+        )
+
+        # Convert seconds to hours
+        estimated_wait_hours = round(estimated_wait_seconds / 3600, 2)
+
+        logger.info(f"Predicted wait time: {estimated_wait_hours} hours ({estimated_wait_seconds} seconds)")
+
+        return WaitTimeResponse(
+            success=True,
+            estimated_wait_hours=estimated_wait_hours,
+            partition=request.partition
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /predict-wait-time endpoint: {e}")
+        return WaitTimeResponse(
+            success=False,
+            partition=request.partition,
             error=str(e)
         )
 

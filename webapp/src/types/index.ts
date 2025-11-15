@@ -145,3 +145,18 @@ export interface CPUStatsResponse {
   top_memory_nodes: MemoryNode[];
   raw_output: string;
 }
+
+// Wait time prediction types
+export interface WaitTimeRequest {
+  cpu_count: number;
+  memory_gb: number;
+  gpu_count: number;
+  partition: string;
+}
+
+export interface WaitTimeResponse {
+  success: boolean;
+  estimated_wait_hours?: number;
+  partition: string;
+  error?: string;
+}

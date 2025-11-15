@@ -2,7 +2,7 @@ import pickle
 import pandas as pd
 
 class JobWaitDurationPredictor:
-    def _init_(self, model_path='random_forest_model.pkl'):
+    def __init__(self, model_path='random_forest_model.pkl'):
         with open(model_path, 'rb') as f:
             self.model = pickle.load(f)
         # Define the partition columns based on the training data

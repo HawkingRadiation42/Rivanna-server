@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { NodesResponse, JobsResponse, GPUStatsResponse, GPUQueueResponse, CPUStatsResponse, OptimizationRequest, OptimizationResponse, ChatMessage } from '../types';
+import type { NodesResponse, JobsResponse, GPUStatsResponse, GPUQueueResponse, CPUStatsResponse, OptimizationRequest, OptimizationResponse, ChatMessage, WaitTimeRequest, WaitTimeResponse } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -52,6 +52,12 @@ export const clusterAPI = {
     }, {
       timeout: 60000, // 60 seconds for GPT-4 processing
     });
+    return response.data;
+  },
+
+  // Wait time prediction method
+  predictWaitTime: async (request: WaitTimeRequest): Promise<WaitTimeResponse> => {
+    const response = await api.post<WaitTimeResponse>('/predict-wait-time', request);
     return response.data;
   },
 };
