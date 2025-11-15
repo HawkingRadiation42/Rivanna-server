@@ -10,8 +10,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (override existing ones)
+load_dotenv(override=True)
 
 # Global SSH client
 ssh_client = None
@@ -35,13 +35,17 @@ class SSHConnectionManager:
             # Load private key
             private_key = paramiko.RSAKey.from_private_key_file(self.key_path)
 
-            # Connect to HPC
+            # Connect to HPC with extended timeouts
             logger.info(f"Connecting to {self.user}@{self.host}")
             self.client.connect(
                 hostname=self.host,
                 username=self.user,
                 pkey=private_key,
-                timeout=30
+                timeout=30,
+                banner_timeout=60,  # Wait up to 60 seconds for SSH banner
+                auth_timeout=30,    # Authentication timeout
+                look_for_keys=False,  # Don't search for other keys
+                allow_agent=False   # Don't use SSH agent
             )
 
             # Enable keep-alive to maintain connection
@@ -166,6 +170,595 @@ async def get_jobs():
         logger.error(f"Error in /jobs endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/cpu")
+async def get_cpu_stats():
+    """Get CPU and memory statistics from HPC cluster"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        # Read the bash script
+        script_path = os.path.join(os.path.dirname(__file__), "bash_scripts", "CPU_RAM.sh")
+
+        with open(script_path, 'r') as f:
+            script_content = f.read()
+
+        # Execute the script via SSH
+        # We'll use bash -s to pipe the script content
+        command = f"bash -s << 'EOFSCRIPT'\n{script_content}\nEOFSCRIPT"
+        result = ssh_client.execute_command(command)
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
+            )
+
+        # Parse the output
+        output = result["output"]
+
+        # Initialize data structure
+        cluster_totals = {}
+        top_cpu_nodes = []
+        top_memory_nodes = []
+
+        # Split output into lines
+        lines = output.strip().split('\n')
+
+        current_section = None
+        for line in lines:
+            line = line.strip()
+
+            if not line:
+                continue
+
+            # Detect sections
+            if "===== CLUSTER TOTALS =====" in line:
+                current_section = "totals"
+                continue
+            elif "===== TOP 5 NODES BY IDLE (AVAILABLE) CPUs =====" in line:
+                current_section = "cpu"
+                continue
+            elif "===== TOP 5 NODES BY AVAILABLE MEMORY =====" in line:
+                current_section = "memory"
+                continue
+
+            # Parse based on current section
+            if current_section == "totals":
+                if "Total CPUs" in line:
+                    # Extract: "Total CPUs       : 12345"
+                    parts = line.split(':')
+                    if len(parts) == 2:
+                        try:
+                            cluster_totals["total_cpus"] = int(parts[1].strip())
+                        except ValueError:
+                            logger.warning(f"Could not parse total CPUs from: {line}")
+                elif "Total Memory" in line:
+                    # Extract: "Total Memory     : 123456 MB (123.45 GiB)"
+                    parts = line.split(':')
+                    if len(parts) == 2:
+                        mem_parts = parts[1].strip().split()
+                        if len(mem_parts) >= 2:
+                            try:
+                                cluster_totals["total_memory_mb"] = int(mem_parts[0])
+                                # Extract GiB value from "(123.45 GiB)"
+                                if len(mem_parts) >= 4:
+                                    gib_str = mem_parts[2].replace('(', '')
+                                    cluster_totals["total_memory_gib"] = float(gib_str)
+                            except ValueError:
+                                logger.warning(f"Could not parse total memory from: {line}")
+
+            elif current_section == "cpu":
+                # Parse lines like: "node-name                      IdleCPUs=  12  TotalCPUs=  24"
+                if "IdleCPUs=" in line:
+                    try:
+                        parts = line.split()
+                        node_name = parts[0]
+                        idle_cpus = 0
+                        total_cpus = 0
+
+                        for i, part in enumerate(parts):
+                            if "IdleCPUs=" in part:
+                                # Value is in the next element
+                                if i + 1 < len(parts):
+                                    idle_cpus = int(parts[i + 1])
+                            elif "TotalCPUs=" in part:
+                                # Value is in the next element
+                                if i + 1 < len(parts):
+                                    total_cpus = int(parts[i + 1])
+
+                        # Only add if we have valid data
+                        if node_name and total_cpus > 0:
+                            top_cpu_nodes.append({
+                                "node_name": node_name,
+                                "idle_cpus": idle_cpus,
+                                "total_cpus": total_cpus,
+                                "usage_percent": round(((total_cpus - idle_cpus) / total_cpus * 100) if total_cpus > 0 else 0, 2)
+                            })
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Could not parse CPU line: {line}, error: {e}")
+
+            elif current_section == "memory":
+                # Parse lines like: "node-name                      AvailMB=     12345  (12.34 GiB)   TotalMB=     56789 (56.78 GiB)"
+                if "AvailMB=" in line:
+                    try:
+                        parts = line.split()
+                        node_name = parts[0]
+                        avail_mb = 0
+                        avail_gib = 0.0
+                        total_mb = 0
+                        total_gib = 0.0
+
+                        for i, part in enumerate(parts):
+                            if "AvailMB=" in part:
+                                # Value is in the next element
+                                if i + 1 < len(parts):
+                                    avail_mb = int(parts[i + 1])
+                                # GiB value is in i+2, formatted as "(1990.75"
+                                if i + 2 < len(parts):
+                                    gib_val = parts[i + 2].replace('(', '').strip()
+                                    if gib_val:
+                                        avail_gib = float(gib_val)
+                            elif "TotalMB=" in part:
+                                # Value is in the next element
+                                if i + 1 < len(parts):
+                                    total_mb = int(parts[i + 1])
+                                # GiB value is in i+2, formatted as "(1953.12"
+                                if i + 2 < len(parts):
+                                    gib_val = parts[i + 2].replace('(', '').strip()
+                                    if gib_val:
+                                        total_gib = float(gib_val)
+
+                        # Only add if we have valid data
+                        if node_name and total_mb > 0:
+                            top_memory_nodes.append({
+                                "node_name": node_name,
+                                "available_memory_mb": avail_mb,
+                                "available_memory_gib": avail_gib,
+                                "total_memory_mb": total_mb,
+                                "total_memory_gib": total_gib,
+                                "usage_percent": round(((total_mb - avail_mb) / total_mb * 100) if total_mb > 0 else 0, 2)
+                            })
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Could not parse memory line: {line}, error: {e}")
+
+        return {
+            "success": True,
+            "cluster_totals": cluster_totals,
+            "top_cpu_nodes": top_cpu_nodes,
+            "top_memory_nodes": top_memory_nodes,
+            "raw_output": output
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /cpu endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gpu")
+async def get_gpu_stats():
+    """Get GPU statistics from HPC cluster"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        # Build the GPU stats command
+        gpu_command = """
+INC_MIG=0; awk -v INC_MIG="$INC_MIG" '
+FNR==NR{
+  node=$1; type=$2; cnt=$3;
+  if(!INC_MIG && type ~ /\\./) next;
+  ntype[node]=type; ncnt[node]=cnt; tot[type]+=cnt; seen[type]=1; next
+}
+{
+  node=$1; used=$2+0; type=ntype[node];
+  if(type=="") next;
+  if(!INC_MIG && type ~ /\\./) next;
+  if(used>ncnt[node]) used=ncnt[node];
+  use[type]+=used; seen[type]=1
+}
+END{
+  printf "%-12s %10s %10s %10s\\n","TYPE","TOTAL","IN_USE","FREE";
+  for(t in seen) printf "%-12s %10d %10d %10d\\n", t, tot[t]+0, use[t]+0, (tot[t]+0)-(use[t]+0)
+}
+' \\
+<(sinfo -N -h -o "%N %G" | awk '{
+  node=$1; $1=""; gres=substr($0,2); gsub(/\\([^)]*\\)/,"",gres);
+  if(match(gres,/gpu:[^, ]+/,m)){
+    tok=m[0];
+    if(match(tok,/^gpu:([^:]+):([0-9]+)/,mm)){type=mm[1]; cnt=mm[2]}
+    else if(match(tok,/^gpu:([0-9]+)/,mm2)){type="untyped"; cnt=mm2[1]}
+    else next;
+    print node, type, cnt
+  }
+}') \\
+<(scontrol -o show nodes | awk '{
+  split($1,a,"="); node=a[2];
+  used=0;
+  # Try typed GPU allocation first (gres/gpu:TYPE=N)
+  if(match($0,/gres\\/gpu:[^=]+=[0-9]+/)){
+    split($0,parts,",");
+    for(i in parts){
+      if(match(parts[i],/gres\\/gpu:[^=]+=([0-9]+)/,m)) used+=m[1];
+    }
+  }
+  # Otherwise use generic count
+  else if(match($0,/AllocTRES=[^ ]*gres\\/gpu=([0-9]+)/,m)) used=m[1];
+  print node, used
+}')
+"""
+
+        # Execute the command via SSH
+        result = ssh_client.execute_command(gpu_command)
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
+            )
+
+        # Parse the output
+        output = result["output"]
+        lines = output.strip().split('\n')
+
+        gpu_stats = []
+
+        # Process each line
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("TYPE"):  # Skip empty lines and header
+                continue
+
+            try:
+                # Parse line format: "TYPE         TOTAL     IN_USE       FREE"
+                parts = line.split()
+                if len(parts) >= 4:
+                    gpu_type = parts[0]
+                    total = int(parts[1])
+                    in_use = int(parts[2])
+                    free = int(parts[3])
+
+                    # Calculate utilization percentage
+                    utilization = round((in_use / total * 100) if total > 0 else 0, 2)
+
+                    gpu_stats.append({
+                        "type": gpu_type,
+                        "total": total,
+                        "in_use": in_use,
+                        "free": free,
+                        "utilization_percent": utilization
+                    })
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Could not parse GPU line: {line}, error: {e}")
+                continue
+
+        # Calculate overall GPU statistics
+        total_gpus = sum(stat["total"] for stat in gpu_stats)
+        total_in_use = sum(stat["in_use"] for stat in gpu_stats)
+        total_free = sum(stat["free"] for stat in gpu_stats)
+        overall_utilization = round((total_in_use / total_gpus * 100) if total_gpus > 0 else 0, 2)
+
+        return {
+            "success": True,
+            "overall": {
+                "total_gpus": total_gpus,
+                "gpus_in_use": total_in_use,
+                "gpus_free": total_free,
+                "utilization_percent": overall_utilization
+            },
+            "gpu_types": gpu_stats,
+            "raw_output": output
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /gpu endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def parse_squeue_output(output: str):
+    """Helper function to parse squeue output into structured format"""
+    lines = output.strip().split('\n')
+
+    if len(lines) == 0:
+        return []
+
+    jobs = []
+    # Skip the header line and parse job entries
+    for line in lines[1:] if len(lines) > 1 else lines:
+        if line.strip():
+            # Parse the fixed-width columns
+            parts = line.split()
+            if len(parts) >= 7:
+                try:
+                    jobs.append({
+                        "job_id": parts[0].strip(),
+                        "user": parts[1].strip(),
+                        "name": parts[2].strip(),
+                        "state": parts[3].strip(),
+                        "time_used": parts[4].strip(),
+                        "time_limit": parts[5].strip(),
+                        "tres_per_node": parts[6].strip() if len(parts) > 6 else "",
+                        "nodelist": parts[7].strip() if len(parts) > 7 else ""
+                    })
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"Could not parse job line: {line}, error: {e}")
+                    continue
+
+    return jobs
+
+
+@app.get("/gpu/h200")
+async def get_h200_queue():
+    """Get H200 GPU queue using squeue command"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        command = "squeue -p gpu-h200 -O jobid:10,UserName:10,name:30,state:10,timeused:10,TimeLimit:12,tres-per-node,nodelist"
+        result = ssh_client.execute_command(command)
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
+            )
+
+        output = result["output"]
+        jobs = parse_squeue_output(output)
+
+        return {
+            "success": True,
+            "gpu_type": "H200",
+            "partition": "gpu-h200",
+            "job_count": len(jobs),
+            "jobs": jobs,
+            "raw_output": output
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /gpu/h200 endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gpu/a6000")
+async def get_a6000_queue():
+    """Get A6000 GPU queue using squeue command"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        command = "squeue -p gpu-a6000 -O jobid:10,UserName:10,name:30,state:10,timeused:10,TimeLimit:12,tres-per-node,nodelist"
+        result = ssh_client.execute_command(command)
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
+            )
+
+        output = result["output"]
+        jobs = parse_squeue_output(output)
+
+        return {
+            "success": True,
+            "gpu_type": "A6000",
+            "partition": "gpu-a6000",
+            "job_count": len(jobs),
+            "jobs": jobs,
+            "raw_output": output
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /gpu/a6000 endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gpu/a40")
+async def get_a40_queue():
+    """Get A40 GPU queue using squeue command"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        command = "squeue -p gpu-a40 -O jobid:10,UserName:10,name:30,state:10,timeused:10,TimeLimit:12,tres-per-node,nodelist"
+        result = ssh_client.execute_command(command)
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
+            )
+
+        output = result["output"]
+        jobs = parse_squeue_output(output)
+
+        return {
+            "success": True,
+            "gpu_type": "A40",
+            "partition": "gpu-a40",
+            "job_count": len(jobs),
+            "jobs": jobs,
+            "raw_output": output
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /gpu/a40 endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gpu/v100")
+async def get_v100_queue():
+    """Get V100 GPU queue using squeue command"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        command = "squeue -p gpu-v100 -O jobid:10,UserName:10,name:30,state:10,timeused:10,TimeLimit:12,tres-per-node,nodelist"
+        result = ssh_client.execute_command(command)
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
+            )
+
+        output = result["output"]
+        jobs = parse_squeue_output(output)
+
+        return {
+            "success": True,
+            "gpu_type": "V100",
+            "partition": "gpu-v100",
+            "job_count": len(jobs),
+            "jobs": jobs,
+            "raw_output": output
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /gpu/v100 endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gpu/a100")
+async def get_a100_queue():
+    """Get A100 GPU queue (combines both 80GB and 40GB partitions)"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        # Query both A100 partitions
+        command_80 = "squeue -p gpu-a100-80 -O jobid:10,UserName:10,name:30,state:10,timeused:10,TimeLimit:12,tres-per-node,nodelist"
+        command_40 = "squeue -p gpu-a100-40 -O jobid:10,UserName:10,name:30,state:10,timeused:10,TimeLimit:12,tres-per-node,nodelist"
+
+        # Execute both commands
+        result_80 = ssh_client.execute_command(command_80)
+        result_40 = ssh_client.execute_command(command_40)
+
+        if not result_80["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"A100-80 command execution failed: {result_80.get('error', 'Unknown error')}"
+            )
+
+        if not result_40["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"A100-40 command execution failed: {result_40.get('error', 'Unknown error')}"
+            )
+
+        # Parse outputs
+        jobs_80 = parse_squeue_output(result_80["output"])
+        jobs_40 = parse_squeue_output(result_40["output"])
+
+        # Mark each job with its partition
+        for job in jobs_80:
+            job["partition"] = "gpu-a100-80"
+        for job in jobs_40:
+            job["partition"] = "gpu-a100-40"
+
+        # Combine both lists
+        all_jobs = jobs_80 + jobs_40
+
+        return {
+            "success": True,
+            "gpu_type": "A100",
+            "partitions": ["gpu-a100-80", "gpu-a100-40"],
+            "job_count": len(all_jobs),
+            "job_count_80gb": len(jobs_80),
+            "job_count_40gb": len(jobs_40),
+            "jobs": all_jobs,
+            "raw_output_80gb": result_80["output"],
+            "raw_output_40gb": result_40["output"]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /gpu/a100 endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gpu/3090")
+async def get_3090_queue():
+    """Get RTX 3090 GPU queue using squeue command"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        command = "squeue -p gpu-rtx3090 -O jobid:10,UserName:10,name:30,state:10,timeused:10,TimeLimit:12,tres-per-node,nodelist"
+        result = ssh_client.execute_command(command)
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
+            )
+
+        output = result["output"]
+        jobs = parse_squeue_output(output)
+
+        return {
+            "success": True,
+            "gpu_type": "RTX 3090",
+            "partition": "gpu-rtx3090",
+            "job_count": len(jobs),
+            "jobs": jobs,
+            "raw_output": output
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /gpu/3090 endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/gpu/2080ti")
+async def get_2080ti_queue():
+    """Get RTX 2080Ti GPU queue using squeue command"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        command = "squeue -p gpu-rtx2080 -O jobid:10,UserName:10,name:30,state:10,timeused:10,TimeLimit:12,tres-per-node,nodelist"
+        result = ssh_client.execute_command(command)
+
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
+            )
+
+        output = result["output"]
+        jobs = parse_squeue_output(output)
+
+        return {
+            "success": True,
+            "gpu_type": "RTX 2080Ti",
+            "partition": "gpu-rtx2080",
+            "job_count": len(jobs),
+            "jobs": jobs,
+            "raw_output": output
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /gpu/2080ti endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
