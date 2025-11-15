@@ -9,3 +9,8 @@ server/*.pywz
 server/*.pyzw
 server/*.pyzwz
 server/.env
+
+
+venv/
+.gitignore
+.env

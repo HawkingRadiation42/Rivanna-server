@@ -167,34 +167,6 @@ async def get_jobs():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/jobs/raw")
-async def get_jobs_raw():
-    """Get raw squeue output"""
-    try:
-        if not ssh_client:
-            raise HTTPException(status_code=500, detail="SSH connection not initialized")
-
-        command = f"squeue --user {os.getenv('HPC_USER')}"
-        result = ssh_client.execute_command(command)
-
-        if not result["success"]:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Command execution failed: {result.get('error', 'Unknown error')}"
-            )
-
-        return {
-            "success": True,
-            "output": result["output"],
-            "exit_status": result["exit_status"]
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in /jobs/raw endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     import uvicorn
