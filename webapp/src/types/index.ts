@@ -92,6 +92,9 @@ export interface GPUQueueResponse {
 // CPU-related types
 export interface ClusterTotals {
   total_cpus: number;
+  allocated_cpus: number;
+  idle_cpus: number;
+  other_cpus: number;
   total_memory_mb: number;
   total_memory_gib: number;
 }
