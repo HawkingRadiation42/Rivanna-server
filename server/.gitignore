@@ -12,5 +12,4 @@ server/.env
 
 
 venv/
-.gitignore
 .env

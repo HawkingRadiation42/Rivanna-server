@@ -46,6 +46,29 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
+// Optimization types
+export interface OptimizationRequest {
+  user_message: string;
+  conversation_history?: ChatMessage[];
+}
+
+export interface OptimizationRecommendation {
+  partition: string;
+  gpu_type?: string;
+  gpu_count?: number;
+  cpu_count: number;
+  memory_gb: number;
+  time_limit: string;
+  reasoning: string;
+}
+
+export interface OptimizationResponse {
+  success: boolean;
+  natural_language: string;
+  recommendation?: OptimizationRecommendation;
+  error?: string;
+}
+
 // GPU-related types
 export interface GPUOverall {
   total_gpus: number;

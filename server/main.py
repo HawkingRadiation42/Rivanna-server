@@ -1,9 +1,13 @@
 import os
 import paramiko
+from openai import OpenAI
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
 import logging
 
 # Configure logging
@@ -13,8 +17,40 @@ logger = logging.getLogger(__name__)
 # Load environment variables (override existing ones)
 load_dotenv(override=True)
 
+# Configure OpenAI client
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 # Global SSH client
 ssh_client = None
+
+
+# Pydantic models for optimization endpoint
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+    timestamp: Optional[str] = None
+
+
+class OptimizationRequest(BaseModel):
+    user_message: str
+    conversation_history: Optional[List[ChatMessage]] = None
+
+
+class OptimizationRecommendation(BaseModel):
+    partition: str
+    gpu_type: Optional[str] = None
+    gpu_count: Optional[int] = None
+    cpu_count: int
+    memory_gb: int
+    time_limit: str
+    reasoning: str
+
+
+class OptimizationResponse(BaseModel):
+    success: bool
+    natural_language: str
+    recommendation: Optional[OptimizationRecommendation] = None
+    error: Optional[str] = None
 
 
 class SSHConnectionManager:
@@ -114,6 +150,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Create alias for uvicorn main:main --reload
+main = app
 
 
 @app.get("/")
@@ -783,6 +822,176 @@ async def get_2080ti_queue():
     except Exception as e:
         logger.error(f"Error in /gpu/2080ti endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/optimize")
+async def optimize_job(request: OptimizationRequest):
+    """Optimize job configuration using GPT-4 and real-time cluster data"""
+    try:
+        if not ssh_client:
+            raise HTTPException(status_code=500, detail="SSH connection not initialized")
+
+        logger.info(f"Optimization request: {request.user_message}")
+
+        # Fetch real-time cluster data by calling existing endpoints
+        try:
+            # Call internal GPU endpoint
+            gpu_response = await get_gpu_stats()
+            gpu_info = {}
+
+            if gpu_response and "gpu_types" in gpu_response:
+                for gpu_type_data in gpu_response["gpu_types"]:
+                    gpu_info[gpu_type_data["type"]] = {
+                        "total": gpu_type_data["total"],
+                        "in_use": gpu_type_data["in_use"],
+                        "free": gpu_type_data["free"],
+                        "utilization": gpu_type_data["utilization_percent"]
+                    }
+
+            # Call internal CPU endpoint
+            cpu_response = await get_cpu_stats()
+            cpu_info = {"total_cpus": 0, "allocated_cpus": 0, "idle_cpus": 0}
+
+            if cpu_response and "cluster_totals" in cpu_response:
+                totals = cpu_response["cluster_totals"]
+                cpu_info = {
+                    "total_cpus": totals.get("total_cpus", 0),
+                    "allocated_cpus": totals.get("allocated_cpus", 0),
+                    "idle_cpus": totals.get("idle_cpus", 0)
+                }
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch cluster data: {e}")
+            gpu_info = {}
+            cpu_info = {"total_cpus": 0, "allocated_cpus": 0, "idle_cpus": 0}
+
+        # Build context for GPT
+        gpu_context = "\n".join([
+            f"- {gpu_type}: {data['free']} free out of {data['total']} total ({data['utilization']}% utilized)"
+            for gpu_type, data in gpu_info.items()
+        ]) if gpu_info else "GPU information unavailable"
+
+        cpu_context = f"Total CPUs: {cpu_info['total_cpus']}, Allocated: {cpu_info['allocated_cpus']}, Idle: {cpu_info['idle_cpus']}"
+
+        # Build conversation history for context
+        conversation_context = ""
+        if request.conversation_history:
+            conversation_context = "\n".join([
+                f"{msg.role}: {msg.content}" for msg in request.conversation_history[-5:]  # Last 5 messages
+            ])
+
+        # System prompt for GPT
+        system_prompt = f"""You are an expert HPC (High-Performance Computing) cluster optimization assistant for a SLURM-managed cluster.
+
+Current Cluster Status:
+GPU Availability:
+{gpu_context}
+
+CPU Status:
+{cpu_context}
+
+Your task is to analyze user job requirements and provide:
+1. Natural language explanation of recommendations
+2. Structured JSON configuration
+
+Available GPU partitions:
+- gpu-h200 (H200 GPUs)
+- gpu-a6000 (A6000 GPUs)
+- gpu-a40 (A40 GPUs)
+- gpu-v100 (V100 GPUs)
+- gpu-a100-80 (A100 80GB)
+- gpu-a100-40 (A100 40GB)
+- gpu-rtx3090 (RTX 3090)
+- gpu-rtx2080 (RTX 2080Ti)
+
+When responding:
+1. First provide a natural language explanation (2-3 sentences)
+2. Then provide a JSON block with this exact structure:
+```json
+{{
+  "partition": "recommended-partition-name",
+  "gpu_type": "GPU-type-name",
+  "gpu_count": number,
+  "cpu_count": number,
+  "memory_gb": number,
+  "time_limit": "HH:MM:SS",
+  "reasoning": "Brief explanation of why this configuration"
+}}
+```
+
+Base recommendations on:
+- Current GPU availability (prefer GPUs with higher free count)
+- User's stated requirements
+- Typical use cases for different GPU types
+- Resource efficiency"""
+
+        # Call OpenAI GPT-5-mini (using 1.0+ syntax)
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-5-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": request.user_message}
+                ],
+            )
+
+            gpt_response = response.choices[0].message.content
+            logger.info(f"GPT Response: {gpt_response}")
+
+            # Parse the response to extract JSON
+            natural_language = gpt_response
+            recommendation = None
+
+            # Try to extract JSON from response
+            try:
+                # Find JSON block in response
+                json_start = gpt_response.find('```json')
+                json_end = gpt_response.find('```', json_start + 7)
+
+                if json_start != -1 and json_end != -1:
+                    json_str = gpt_response[json_start + 7:json_end].strip()
+                    recommendation_data = json.loads(json_str)
+
+                    recommendation = OptimizationRecommendation(**recommendation_data)
+
+                    # Extract natural language (text before JSON)
+                    natural_language = gpt_response[:json_start].strip()
+                else:
+                    # Try to find JSON object without code blocks
+                    import re
+                    json_match = re.search(r'\{[^}]+\}', gpt_response, re.DOTALL)
+                    if json_match:
+                        recommendation_data = json.loads(json_match.group())
+                        recommendation = OptimizationRecommendation(**recommendation_data)
+                        natural_language = gpt_response[:json_match.start()].strip()
+
+            except Exception as parse_error:
+                logger.warning(f"Failed to parse JSON from GPT response: {parse_error}")
+                # Return just natural language if JSON parsing fails
+                pass
+
+            return OptimizationResponse(
+                success=True,
+                natural_language=natural_language if natural_language else gpt_response,
+                recommendation=recommendation
+            )
+
+        except Exception as openai_error:
+            logger.error(f"OpenAI API error: {openai_error}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get optimization from AI: {str(openai_error)}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /optimize endpoint: {e}")
+        return OptimizationResponse(
+            success=False,
+            natural_language="Sorry, I encountered an error while processing your request.",
+            error=str(e)
+        )
 
 
 if __name__ == "__main__":

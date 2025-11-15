@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { NodesResponse, JobsResponse, GPUStatsResponse, GPUQueueResponse, CPUStatsResponse } from '../types';
+import type { NodesResponse, JobsResponse, GPUStatsResponse, GPUQueueResponse, CPUStatsResponse, OptimizationRequest, OptimizationResponse, ChatMessage } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -41,6 +41,17 @@ export const clusterAPI = {
   // CPU-related methods
   getCPUStats: async (): Promise<CPUStatsResponse> => {
     const response = await api.get<CPUStatsResponse>('/cpu');
+    return response.data;
+  },
+
+  // AI Optimization methods
+  optimizeJob: async (message: string, history?: ChatMessage[]): Promise<OptimizationResponse> => {
+    const response = await api.post<OptimizationResponse>('/optimize', {
+      user_message: message,
+      conversation_history: history
+    }, {
+      timeout: 60000, // 60 seconds for GPT-4 processing
+    });
     return response.data;
   },
 };

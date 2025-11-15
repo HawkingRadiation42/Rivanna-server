@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Bot, User, Sparkles, Lightbulb, Clock, Zap } from 'lucide-react';
-import type { ChatMessage } from '../types';
+import { Send, Bot, User, Sparkles, Lightbulb, Clock, Zap, Copy, CheckCircle2 } from 'lucide-react';
+import { clusterAPI } from '../utils/api';
+import type { ChatMessage, OptimizationResponse } from '../types';
 
 const suggestedPrompts = [
   {
@@ -30,7 +31,9 @@ export default function AIAssistant() {
     },
   ]);
   const [input, setInput] = useState('');
+  const [placeholderText, setPlaceholderText] = useState('Ask me anything about the cluster...');
   const [isTyping, setIsTyping] = useState(false);
+  const [lastRecommendation, setLastRecommendation] = useState<OptimizationResponse | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -50,24 +53,47 @@ export default function AIAssistant() {
       timestamp: new Date(),
     };
 
+    const currentInput = input;
     setMessages(prev => [...prev, userMessage]);
     setInput('');
+    setPlaceholderText('Ask me anything about the cluster...');
     setIsTyping(true);
 
-    // Simulate AI response (replace with actual API call)
-    setTimeout(() => {
-      const aiResponse: ChatMessage = {
+    try {
+      // Call the GPT-4 optimization endpoint
+      const response = await clusterAPI.optimizeJob(currentInput, messages);
+
+      if (response.success) {
+        const aiResponse: ChatMessage = {
+          role: 'assistant',
+          content: response.natural_language,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, aiResponse]);
+        setLastRecommendation(response);
+      } else {
+        const errorResponse: ChatMessage = {
+          role: 'assistant',
+          content: response.error || 'Sorry, I encountered an error processing your request. Please try again.',
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errorResponse]);
+      }
+    } catch (error) {
+      console.error('Failed to get AI response:', error);
+      const errorResponse: ChatMessage = {
         role: 'assistant',
-        content: `Based on the current cluster status, here's my analysis:\n\n${input.toLowerCase().includes('gpu') ? '**GPU Availability:**\n- gpu-a40 partition has 8 idle GPUs\n- gpu-v100 partition has 12 idle GPUs\n- Estimated wait time: 5-15 minutes\n\n' : ''}**Recommendations:**\n1. Consider using the least busy partition for faster job start\n2. Request only the resources you actually need\n3. Use shorter walltime to enable backfilling\n\nWould you like me to provide more specific optimization strategies?`,
+        content: 'Sorry, I\'m having trouble connecting to the AI service. Please ensure the backend is running and try again.',
         timestamp: new Date(),
       };
-      setMessages(prev => [...prev, aiResponse]);
+      setMessages(prev => [...prev, errorResponse]);
+    } finally {
       setIsTyping(false);
-    }, 1500);
+    }
   };
 
   const handleSuggestedPrompt = (prompt: string) => {
-    setInput(prompt);
+    setPlaceholderText(prompt);
   };
 
   return (
@@ -211,6 +237,74 @@ export default function AIAssistant() {
           </motion.div>
         )}
 
+        {/* Recommendation Display */}
+        {lastRecommendation && lastRecommendation.recommendation && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6"
+          >
+          <div className="bg-gradient-to-br from-[#D65737]/10 to-purple-500/10 border border-[#D65737]/30 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[#D65737]" />
+                Recommended Configuration
+              </h3>
+              <button
+                onClick={() => {
+                  const config = lastRecommendation.recommendation!;
+                  const script = `#!/bin/bash
+#SBATCH --partition=${config.partition}
+${config.gpu_type ? `#SBATCH --gres=gpu:${config.gpu_type.toLowerCase()}:${config.gpu_count || 1}` : ''}
+#SBATCH --cpus-per-task=${config.cpu_count}
+#SBATCH --mem=${config.memory_gb}G
+#SBATCH --time=${config.time_limit}
+
+# Your job commands here`;
+                  navigator.clipboard.writeText(script);
+                }}
+                className="btn-secondary text-xs px-3 py-1 flex items-center gap-1"
+              >
+                <Copy className="w-3 h-3" />
+                Copy SLURM Script
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-dark/50 rounded p-2">
+                <div className="text-xs text-text-secondary/70">Partition</div>
+                <div className="text-sm font-medium text-text-primary">{lastRecommendation.recommendation.partition}</div>
+              </div>
+              {lastRecommendation.recommendation.gpu_type && (
+                <div className="bg-dark/50 rounded p-2">
+                  <div className="text-xs text-text-secondary/70">GPU Type</div>
+                  <div className="text-sm font-medium text-text-primary">{lastRecommendation.recommendation.gpu_type} × {lastRecommendation.recommendation.gpu_count}</div>
+                </div>
+              )}
+              <div className="bg-dark/50 rounded p-2">
+                <div className="text-xs text-text-secondary/70">CPUs</div>
+                <div className="text-sm font-medium text-text-primary">{lastRecommendation.recommendation.cpu_count}</div>
+              </div>
+              <div className="bg-dark/50 rounded p-2">
+                <div className="text-xs text-text-secondary/70">Memory</div>
+                <div className="text-sm font-medium text-text-primary">{lastRecommendation.recommendation.memory_gb} GB</div>
+              </div>
+              <div className="bg-dark/50 rounded p-2">
+                <div className="text-xs text-text-secondary/70">Time Limit</div>
+                <div className="text-sm font-medium text-text-primary">{lastRecommendation.recommendation.time_limit}</div>
+              </div>
+            </div>
+
+            {lastRecommendation.recommendation.reasoning && (
+              <div className="mt-3 pt-3 border-t border-dark-border/30">
+                <div className="text-xs text-text-secondary/70 mb-1">Reasoning:</div>
+                <div className="text-sm text-text-primary/90">{lastRecommendation.recommendation.reasoning}</div>
+              </div>
+            )}
+          </div>
+          </motion.div>
+        )}
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -226,7 +320,7 @@ export default function AIAssistant() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-            placeholder="Ask me anything about the cluster..."
+            placeholder={placeholderText}
             className="input flex-1"
             disabled={isTyping}
           />
