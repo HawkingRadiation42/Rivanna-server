@@ -1,8 +1,8 @@
-# UltraThink 🚀
+# RivannaAI 🚀
 
 > AI-Powered HPC Cluster Resource Monitoring & Job Optimization Platform
 
-UltraThink is an intelligent web application that revolutionizes how researchers interact with High-Performance Computing (HPC) clusters. By combining real-time resource monitoring with machine learning-powered predictions and conversational AI assistance, UltraThink helps users make smarter decisions about their computational workloads.
+RivannaAI is an intelligent web application that revolutionizes how researchers interact with High-Performance Computing (HPC) clusters. By combining real-time resource monitoring with machine learning-powered predictions and conversational AI assistance, RivannaAI helps users make smarter decisions about their computational workloads.
 
 ## 🎯 The Problem
 
@@ -14,7 +14,7 @@ HPC cluster users face several challenges:
 
 ## 💡 Our Solution
 
-UltraThink provides a unified platform that:
+RivannaAI provides a unified platform that:
 1. **Monitors cluster resources** in real-time across all GPU types and partitions
 2. **Predicts job wait times** using machine learning trained on historical cluster data
 3. **Recommends optimal configurations** through an AI assistant that understands your workload
