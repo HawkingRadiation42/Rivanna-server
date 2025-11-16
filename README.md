@@ -1,4 +1,4 @@
-# RivannaAI 🚀
+# RivannaAI
 
 > AI-Powered HPC Cluster Resource Monitoring & Job Optimization Platform
 
